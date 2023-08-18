@@ -26,6 +26,7 @@ import org.springframework.web.client.RestTemplate;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Validated
 @Service
@@ -52,7 +53,9 @@ public class ExchangeRateService implements IExchangeRateService {
             currencyEntity = getFromApiBySymbol(symbol);
         }
 
-        List<RateEntity> listRates = ratesRepository.findByIdWhereDateBetweenStartAndEnd(currencyEntity.getCurId(), start, end);
+        final CurrencyEntity currency = currencyEntity;
+
+        final List<RateEntity> listRates = ratesRepository.findByIdWhereDateBetweenStartAndEnd(currencyEntity.getCurId(), start, end);
 
         if(!conversionService.canConvert(RateEntity.class, Rate.class)) {
             throw new ConversionTimeException("Unable to convert", ErrorCode.ERROR);
@@ -63,48 +66,38 @@ public class ExchangeRateService implements IExchangeRateService {
                     map(entity -> conversionService.convert(entity, Rate.class))
                     .toList();
         } else {
+            RateEntity.RateEntityBuilder builder = RateEntity.builder();
+            List<RateEntity> newRates = new ArrayList<>();
             Rate[] rates = restTemplate.getForObject(String.format(URL_RATES_PERIOD, currencyEntity.getCurId(), start, end), Rate[].class);
+
             if (Objects.nonNull(rates)) {
                 if(listRates.isEmpty()) {
-                    RateEntity.RateEntityBuilder builder = RateEntity.builder();
-                    for (Rate rate : rates) {
-                        listRates.add(builder
-                                .currency(currencyEntity)
-                                .rate(rate.getRate())
-                                .date(rate.getDate())
-                                .build());
-                    }
+
+                    Arrays.stream(rates).map(rate -> builder
+                            .currency(currency)
+                            .rate(rate.getRate())
+                            .date(rate.getDate())
+                            .build())
+                            .collect(Collectors.toCollection(() -> newRates));
                 } else {
-                    int startSize = listRates.size();
-                    int i = 0;
-                    List<RateEntity> newRates = new ArrayList<>();
-                    RateEntity.RateEntityBuilder builder = RateEntity.builder();
-                    for (int j = 0; j < startSize; j++) {
-                        if (!listRates.get(i).getDate().equals(rates[j].getDate())) {
-                            newRates.add(builder
-                                    .currency(currencyEntity)
-                                    .rate(rates[j].getRate())
-                                    .date(rates[j].getDate())
-                                    .build());
-                        } else {
-                            i++;
-                        }
-                    }
 
-                    for (int j = i; j < rates.length; j++) {
-                        newRates.add(builder
-                                .currency(currencyEntity)
-                                .rate(rates[j].getRate())
-                                .date(rates[j].getDate())
-                                .build());
-                    }
-
-                    listRates = newRates;
+                    Arrays.stream(rates).
+                            filter(e -> listRates.stream().
+                                    noneMatch(rateEntity -> rateEntity.getDate().equals(e.getDate())))
+                            .map(dto -> builder
+                                    .currency(currency)
+                                    .rate(dto.getRate())
+                                    .date(dto.getDate())
+                                    .build())
+                            .collect(Collectors.toCollection(() -> newRates));
                 }
-                ratesRepository.saveAll(listRates);
+                ratesRepository.saveAll(newRates);
 
-                return listRates.stream()
-                        .map(entity -> conversionService.convert(entity, Rate.class))
+                return Arrays.stream(rates).
+                        map((rate)-> {
+                            rate.setSymbol(currency.getSymbol());
+                            return rate;
+                        })
                         .toList();
             } else {
                 throw new ConnectionAPIException("Problems connecting to an external service", ErrorCode.ERROR);
